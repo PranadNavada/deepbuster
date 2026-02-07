@@ -1,12 +1,22 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow import keras
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-from tensorflow.keras import layers, Model, Sequential, optimizers, losses, metrics # pyright: ignore[reportMissingImports]
-from tensorflow.keras.preprocessing.image import ImageDataGenerator # pyright: ignore[reportMissingImports]
+from tensorflow.keras import layers, optimizers
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
+
+print(tf.__version__)
+print(tf.config.list_physical_devices('GPU'))
+
+print("TF version:", tf.__version__)
+print("GPUs:", tf.config.list_physical_devices('GPU'))
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
 
 classes = ['REAL', 'FAKE']
 
@@ -54,8 +64,8 @@ Model.compile(optimizers.Adam(learning_rate=0.0001), loss='sparse_categorical_cr
 
 callbacks = [
     ModelCheckpoint("best_model.h5", verbose=1, save_best_only=True, monitor="val_accuracy"),
-    ReduceLROnPlateau(monitor="val_accuracy", verbose=1, factor=0.1, patience=25, min_lr=1e-6),
-    EarlyStopping(monitor="val_accuracy", patience=25, restore_best_weights=True, verbose=1)
+    ReduceLROnPlateau(monitor="val_accuracy", verbose=1, factor=0.1, patience=3, min_lr=1e-6),
+    EarlyStopping(monitor="val_accuracy", patience=3, restore_best_weights=True, verbose=1)
 ]
 
 model = Model.fit(train_generator, epochs=300, validation_data=validation_generator, callbacks=callbacks) 
