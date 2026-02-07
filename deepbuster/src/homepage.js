@@ -1,19 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React from 'react';
 
 function Homepage() {
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    fetch("/api/message")
-      .then((response) => response.json())
-      .then((data) => setMessage(data.message))
-      .catch((error) => console.error("Error fetching message:", error));
-  }, []);
-
   return (
     <div>
-      <h1>Welcome to DeepBuster!</h1>
-      <p>{message}</p>
+      <h1>Welcome to the Homepage!</h1>
+      <p>This is your new homepage.</p>
     </div>
   );
 }
