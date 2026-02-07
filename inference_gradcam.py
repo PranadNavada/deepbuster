@@ -1,74 +1,85 @@
 import os
-import argparse
-import numpy as np
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
-from tensorflow.keras import layers
+import numpy as np
 import cv2
 
-classes = ['REAL', 'FAKE']
+# Load an image and preprocess it
+def preprocess_image(img_path):
+    img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+    img = cv2.resize(img, (224, 224))  # Resize for MobileNetV2
+    img = np.expand_dims(img, axis=0)
+    img = tf.keras.applications.mobilenet_v2.preprocess_input(img)
+    return img
 
-def get_last_conv_layer_name(base_model):
-    for layer in reversed(base_model.layers):
-        if isinstance(layer, layers.Conv2D):
-            return layer.name
-    raise ValueError("No Conv2D layer found in base model.")
+# Function to get the class label
+def get_class_label(preds):
+    decoded_preds = tf.keras.applications.mobilenet_v2.decode_predictions(preds, top=1)[0]  # Get top prediction
+    class_label = decoded_preds[0][1]  # Extract class name
+    return class_label
 
-def make_gradcam_heatmap(img_array, model, conv_layer_name):
-    base_model = model.layers[0]
-    conv_layer = base_model.get_layer(conv_layer_name)
-    grad_model = tf.keras.Model(model.inputs, [conv_layer.output, model.output])
+# Function to generate Grad-CAM heatmap
+def compute_gradcam(model, img_array, class_index, conv_layer_name="Conv_1"):
+    grad_model = tf.keras.models.Model(
+        inputs=model.input,
+        outputs=[model.get_layer(conv_layer_name).output, model.output]
+    )
+
     with tf.GradientTape() as tape:
-        conv_output, preds = grad_model(img_array)
-        pred_index = tf.argmax(preds[0])
-        class_channel = preds[:, pred_index]
-    grads = tape.gradient(class_channel, conv_output)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_output = conv_output[0]
-    heatmap = tf.reduce_sum(conv_output * pooled_grads, axis=-1)
-    heatmap = tf.maximum(heatmap, 0) / (tf.reduce_max(heatmap) + 1e-8)
-    return heatmap.numpy()
+        conv_outputs, predictions = grad_model(img_array)
+        loss = predictions[:, class_index]  # Loss for target class
 
-def apply_gradcam(image_path, model, output_path):
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    img = tf.keras.utils.load_img(image_path, target_size=(224, 224))
-    img_array = tf.keras.utils.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0) / 255.0
-    conv_layer_name = get_last_conv_layer_name(model.layers[0])
-    heatmap = make_gradcam_heatmap(img_array, model, conv_layer_name)
-    image_bgr = cv2.imread(image_path)
-    image_bgr = cv2.resize(image_bgr, (224, 224))
-    heatmap = cv2.resize(heatmap, (224, 224))
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    overlay = cv2.addWeighted(image_bgr, 0.55, heatmap, 0.45, 0)
-    cv2.imwrite(output_path, overlay)
-    return output_path, conv_layer_name
+    grads = tape.gradient(loss, conv_outputs)  # Compute gradients
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))  # Global average pooling
 
-def predict_and_gradcam(image_path, model, output_path):
-    img = tf.keras.utils.load_img(image_path, target_size=(224, 224))
-    img_array = tf.keras.utils.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0) / 255.0
-    preds = model.predict(img_array)
-    pred_index = int(np.argmax(preds[0]))
-    label = classes[pred_index]
-    score = float(preds[0][pred_index])
-    if label == "FAKE":
-        gradcam_path, conv_layer = apply_gradcam(image_path, model, output_path=output_path)
-        return {"label": label, "score": score, "gradcam_path": gradcam_path, "conv_layer": conv_layer}
-    return {"label": label, "score": score, "gradcam_path": None, "conv_layer": None}
+    conv_outputs = conv_outputs.numpy()[0]
+    pooled_grads = pooled_grads.numpy()
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="best_model.h5")
-    parser.add_argument("--image", required=True)
-    parser.add_argument("--output", default="gradcam/output.jpg")
-    args = parser.parse_args()
+    # Multiply feature maps by importance weights
+    for i in range(pooled_grads.shape[-1]):
+        conv_outputs[:, :, i] *= pooled_grads[i]
 
-    model = tf.keras.models.load_model(args.model)
-    result = predict_and_gradcam(args.image, model, output_path=args.output)
-    print(result)
+    heatmap = np.mean(conv_outputs, axis=-1)  # Compute heatmap
+    heatmap = np.maximum(heatmap, 0)  # ReLU activation
+    heatmap /= np.max(heatmap)  # Normalize
+
+    return heatmap
+
+# Overlay heatmap on image
+def overlay_heatmap(img_path, heatmap, alpha=0.4):
+    img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+
+    heatmap = np.uint8(255 * heatmap)  # Convert to 0-255 scale
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)  # Apply color map
+
+    # heatmap = np.expand_dims(heatmap, axis=-1)
+    # heatmap = np.concatenate([heatmap, heatmap, heatmap], axis=-1)
+
+    superimposed_img = cv2.addWeighted(img, alpha, heatmap, 1 - alpha, 0)  # Blend images
+    return superimposed_img
 
 if __name__ == "__main__":
-    main()
+    # Load a pretrained model (MobileNetV2)
+    model = tf.keras.models.load("/Users/tarunc/Personal/deep_busters/image_model.h5")
+    # model.summary()
+
+    # Example Usage
+    img_path = "images/dog-2.jpg"  # Replace with your image path
+    img_array = preprocess_image(img_path)
+
+    # Get model predictions
+    preds = model.predict(img_array)
+    class_index = np.argmax(preds[0])  # Get class index
+    class_label = get_class_label(preds)  # Get class label
+
+    print(f"Predicted Class: {class_label} (Index: {class_index})")
+
+    # Compute Grad-CAM heatmap
+    heatmap = compute_gradcam(model, img_array, class_index)
+
+    # Overlay heatmap on the original image
+    output_img = overlay_heatmap(img_path, heatmap)
+
+    # Save the heatmap
+    cv2.imwrite("heatmap/2.jpg", output_img)
